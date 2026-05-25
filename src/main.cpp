@@ -93,10 +93,16 @@ public:
 
 private:
     // ---- DSP lifecycle -------------------------------------------------
-    // Create the VFO, then init+start the AM demod and audio sink. Tearing
-    // down stops the sink (downstream) first, then the demod (upstream), then
-    // deletes the VFO last so the channelizer never starves the pipeline.
+    // Create the VFO, then init the AM demod and audio sink and start them
+    // upstream -> downstream (am first, then the sink). Tearing down must stop
+    // in the SAME upstream -> downstream order (am first, then the sink), then
+    // delete the VFO last. This matches the canonical SDR++ decoder modules
+    // (meteor_demodulator, radio): the block reading vfo->output (am) is
+    // stopped before its consumer, so its worker is never left blocked in
+    // am.out.swap() with no reader draining the stream, and the VFO is only
+    // deleted once nothing reads vfo->output anymore.
     void startDSP() {
+        if (running) { return; }  // never start a second VFO over a running chain
         double centerOffset = 0.0;
         double bw = gui::waterfall.getBandwidth();
         centerOffset = std::clamp<double>(0.0, -bw / 2.0, bw / 2.0);
@@ -139,8 +145,11 @@ private:
             return;
         }
         running = false;
-        audioSink.stop();
+        // Upstream -> downstream: stop the AM demod (reader of vfo->output)
+        // first, then the sink. Reversing this can leave am's worker blocked in
+        // am.out.swap() and crash on deleteVFO.
         am.stop();
+        audioSink.stop();
         if (vfo) {
             sigpath::vfoManager.deleteVFO(vfo);
             vfo = nullptr;
