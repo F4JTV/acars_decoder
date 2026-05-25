@@ -122,17 +122,31 @@ private:
 
         demod->reset();
 
-        // AM envelope demodulation -> real audio at 12500 Hz.
-        am.init(vfo->output,
-                carrierAGC ? dsp::demod::AM<float>::AGCMode::CARRIER
-                           : dsp::demod::AM<float>::AGCMode::AUDIO,
-                bandwidth,
-                agcAttack / ACARS_VFO_SR,
-                agcDecay / ACARS_VFO_SR,
-                100.0 / ACARS_VFO_SR,
-                ACARS_VFO_SR);
-
-        audioSink.init(&am.out, _audioHandler, this);
+        if (!dspInited) {
+            // Initialize the DSP blocks EXACTLY ONCE. On every later enable we
+            // only re-point the input with am.setInput(), exactly like the
+            // canonical SDR++ decoder modules (pager_decoder, meteor). Calling
+            // Processor/Sink init() a second time would registerInput() again
+            // without unregistering the previous one -> a second reader gets
+            // registered on the stream (e.g. a duplicate reader on am.out),
+            // which corrupts the swap/flush handshake and crashes on the next
+            // enable/disable cycle. setInput() instead unregisters the old
+            // input first (and only manipulates pointers, so it is safe even
+            // after the previous VFO has been deleted).
+            am.init(vfo->output,
+                    carrierAGC ? dsp::demod::AM<float>::AGCMode::CARRIER
+                               : dsp::demod::AM<float>::AGCMode::AUDIO,
+                    bandwidth,
+                    agcAttack / ACARS_VFO_SR,
+                    agcDecay / ACARS_VFO_SR,
+                    100.0 / ACARS_VFO_SR,
+                    ACARS_VFO_SR);
+            audioSink.init(&am.out, _audioHandler, this);
+            dspInited = true;
+        }
+        else {
+            am.setInput(vfo->output);
+        }
 
         am.start();
         audioSink.start();
@@ -499,6 +513,7 @@ private:
     std::string name;
     bool enabled = true;
     bool running = false;
+    bool dspInited = false;   // am/audioSink init() must run only once (see startDSP)
 
     // DSP chain
     VFOManager::VFO* vfo = nullptr;
